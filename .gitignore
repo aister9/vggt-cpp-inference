@@ -1,0 +1,45 @@
+# Build directories
+/build/
+/out/
+/bin/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+compile_commands.json
+CTestTestfile.cmake
+cmake_install.cmake
+install_manifest.txt
+Testing/
+
+# Visual Studio
+/.vs/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.VC.db
+*.VC.opendb
+
+# MSVC outputs
+*.obj
+*.ipch
+*.pdb
+*.idb
+*.ilk
+*.tlog
+*.lastbuildstate
+*.log
+
+# Executables and libraries
+*.exe
+*.dll
+*.lib
+*.exp
+
+# Editor
+*.user
+*.suo
+*.tmp
+*.cache
