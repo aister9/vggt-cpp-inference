@@ -5,6 +5,7 @@
 #include <string>
 #include <filesystem>
 #include <fstream>
+#include <unordered_map>
 
 #include <NvInfer.h>
 #include <NvOnnxParser.h>
@@ -54,6 +55,25 @@ inline std::unique_ptr<cudaStream_t, decltype(StreamDeleter)> makeCudaStream()
     }
 
     return pStream;
+}
+
+inline torch::ScalarType toTorchScalarType(nvinfer1::DataType type)
+{
+    switch (type)
+    {
+    case nvinfer1::DataType::kFLOAT:
+        return torch::kFloat32;
+    case nvinfer1::DataType::kHALF:
+        return torch::kFloat16;
+    case nvinfer1::DataType::kINT32:
+        return torch::kInt32;
+    case nvinfer1::DataType::kINT64:
+        return torch::kInt64;
+    case nvinfer1::DataType::kBOOL:
+        return torch::kBool;
+    default:
+        throw std::runtime_error("Unsupported TensorRT tensor datatype");
+    }
 }
 
 class OnnxVGGT
@@ -257,13 +277,20 @@ OnnxVGGT::VGGTOutput OnnxVGGT::infer(const std::vector<torch::Tensor> &input_ima
 
     auto types = (type == FP16) ? torch::kFloat16 : torch::kFloat32;
 
-    auto context = std::unique_ptr<nvinfer1::IExecutionContext>(
+    auto context = std::unique_ptr<nvinfer1::IExecutionContext, InferDeleter>(
         mEngine->createExecutionContext());
 
     if (!context)
         throw std::runtime_error("createExecutionContext failed");
 
-    context->setInputShape("input_images", nvinfer1::Dims4{B, C, H, W});
+    if (input_images.size() != B)
+        throw std::runtime_error("infer expects exactly 4 input images");
+
+    if (!context->setInputShape("input_images", nvinfer1::Dims4{B, C, H, W}))
+        throw std::runtime_error("setInputShape failed");
+
+    if (!context->allInputDimensionsSpecified())
+        throw std::runtime_error("Not all input dimensions are specified");
 
     cudaStream_t stream;
     cudaStreamCreate(&stream);
@@ -283,47 +310,86 @@ OnnxVGGT::VGGTOutput OnnxVGGT::infer(const std::vector<torch::Tensor> &input_ima
     for (const auto &name : outputNames)
     {
         auto dims = context->getTensorShape(name.c_str());
-
-        std::vector<int64_t> shape;
-        int64_t count = 1;
-
-        for (int i = 0; i < dims.nbDims; ++i)
+        if (dims.nbDims < 0)
         {
-            shape.push_back(dims.d[i]);
-            count *= dims.d[i];
+            cudaStreamDestroy(stream);
+            throw std::runtime_error("Failed to resolve output tensor shape");
         }
 
+        std::vector<int64_t> shape;
+        for (int i = 0; i < dims.nbDims; ++i)
+        {
+            if (dims.d[i] < 0)
+            {
+                cudaStreamDestroy(stream);
+                throw std::runtime_error("Output tensor has unresolved dynamic dimension");
+            }
+            shape.push_back(dims.d[i]);
+        }
+
+        const auto tensorType = toTorchScalarType(mEngine->getTensorDataType(name.c_str()));
         auto tensor = torch::empty(
             shape,
             torch::TensorOptions()
-                .dtype(torch::kFloat32)
+                .dtype(tensorType)
                 .device(torch::kCUDA));
 
         outputTensors[name] = tensor;
 
-        context->setTensorAddress(
-            name.c_str(),
-            tensor.data_ptr());
+        if (!context->setTensorAddress(name.c_str(), tensor.data_ptr()))
+        {
+            cudaStreamDestroy(stream);
+            throw std::runtime_error(std::string("Failed to set output tensor address: ") + name);
+        }
     }
+
+    auto inputTorchType = toTorchScalarType(
+        mEngine->getTensorDataType(inputName));
 
     torch::Tensor batch = torch::zeros(
         {B, C, H, W},
         torch::TensorOptions()
-            .dtype(types)
+            .dtype(inputTorchType)
             .device(torch::kCUDA));
-
-    context->setTensorAddress("input_images", batch.data_ptr());
 
     for (int i = 0; i < input_images.size(); i++)
     {
         torch::Tensor img = input_images[i];
 
-        img = img.to(torch::kCUDA).to(types).contiguous();
+        if (img.sizes() != torch::IntArrayRef({C, H, W}))
+        {
+            cudaStreamDestroy(stream);
+            throw std::runtime_error("Each input image must have shape [3, 518, 518]");
+        }
 
+        img = img.to(torch::kCUDA).to(inputTorchType).contiguous();
         batch[i].copy_(img);
     }
 
-    context->setTensorAddress(inputName, batch.data_ptr());
+    if (!context->setTensorAddress(inputName, batch.data_ptr()))
+    {
+        cudaStreamDestroy(stream);
+        throw std::runtime_error("Failed to set input tensor address");
+    }
+
+    for (int i = 0; i < mEngine->getNbIOTensors(); ++i)
+    {
+        const char *name = mEngine->getIOTensorName(i);
+        auto mode = mEngine->getTensorIOMode(name);
+        auto dtype = mEngine->getTensorDataType(name);
+        auto dims = context->getTensorShape(name);
+
+        std::cout << i << " : " << name
+                  << " mode=" << static_cast<int>(mode)
+                  << " dtype=" << static_cast<int>(dtype)
+                  << " shape=";
+
+        for (int d = 0; d < dims.nbDims; ++d)
+            std::cout << dims.d[d] << " ";
+
+        std::cout << std::endl;
+    }
+    cudaDeviceSynchronize();
 
     bool ok = context->enqueueV3(stream);
     if (!ok)
