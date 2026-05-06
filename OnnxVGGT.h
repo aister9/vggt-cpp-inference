@@ -1,4 +1,6 @@
 #pragma once
+#include <torch/torch.h>
+
 #include <iostream>
 #include <string>
 #include <filesystem>
@@ -57,8 +59,18 @@ inline std::unique_ptr<cudaStream_t, decltype(StreamDeleter)> makeCudaStream()
 class OnnxVGGT
 {
 public:
+    struct VGGTOutput
+    {
+        torch::Tensor pose_enc;
+        torch::Tensor depth;
+        torch::Tensor depth_conf;
+        torch::Tensor world_points;
+        torch::Tensor world_points_conf;
+        torch::Tensor images;
+    };
+
     bool build();
-    bool infer();
+    VGGTOutput infer(const std::vector<torch::Tensor> &input_images);
 
     void printInfo();
 
@@ -236,6 +248,102 @@ bool OnnxVGGT::build()
     return true;
 }
 
+OnnxVGGT::VGGTOutput OnnxVGGT::infer(const std::vector<torch::Tensor> &input_images)
+{
+    constexpr int B = 4;
+    constexpr int C = 3;
+    constexpr int H = 518;
+    constexpr int W = 518;
+
+    auto types = (type == FP16) ? torch::kFloat16 : torch::kFloat32;
+
+    auto context = std::unique_ptr<nvinfer1::IExecutionContext>(
+        mEngine->createExecutionContext());
+
+    if (!context)
+        throw std::runtime_error("createExecutionContext failed");
+
+    context->setInputShape("input_images", nvinfer1::Dims4{B, C, H, W});
+
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+
+    const char *inputName = "input_images";
+
+    std::unordered_map<std::string, torch::Tensor> outputTensors;
+
+    std::vector<std::string> outputNames = {
+        "pose_enc",
+        "depth",
+        "depth_conf",
+        "world_points",
+        "world_points_conf",
+        "images"};
+
+    for (const auto &name : outputNames)
+    {
+        auto dims = context->getTensorShape(name.c_str());
+
+        std::vector<int64_t> shape;
+        int64_t count = 1;
+
+        for (int i = 0; i < dims.nbDims; ++i)
+        {
+            shape.push_back(dims.d[i]);
+            count *= dims.d[i];
+        }
+
+        auto tensor = torch::empty(
+            shape,
+            torch::TensorOptions()
+                .dtype(torch::kFloat32)
+                .device(torch::kCUDA));
+
+        outputTensors[name] = tensor;
+
+        context->setTensorAddress(
+            name.c_str(),
+            tensor.data_ptr());
+    }
+
+    torch::Tensor batch = torch::zeros(
+        {B, C, H, W},
+        torch::TensorOptions()
+            .dtype(types)
+            .device(torch::kCUDA));
+
+    context->setTensorAddress("input_images", batch.data_ptr());
+
+    for (int i = 0; i < input_images.size(); i++)
+    {
+        torch::Tensor img = input_images[i];
+
+        img = img.to(torch::kCUDA).to(types).contiguous();
+
+        batch[i].copy_(img);
+    }
+
+    context->setTensorAddress(inputName, batch.data_ptr());
+
+    bool ok = context->enqueueV3(stream);
+    if (!ok)
+        throw std::runtime_error("TensorRT enqueueV3 failed");
+
+    cudaStreamSynchronize(stream);
+
+    VGGTOutput result;
+    result.pose_enc = outputTensors["pose_enc"];
+    result.depth = outputTensors["depth"];
+    result.depth_conf = outputTensors["depth_conf"];
+    result.world_points = outputTensors["world_points"];
+    result.world_points_conf = outputTensors["world_points_conf"];
+    result.images = outputTensors["images"];
+
+    cudaStreamDestroy(stream);
+
+    return result;
+}
+
 void OnnxVGGT::printInfo()
 {
     int nbBindings = mEngine->getNbIOTensors();
@@ -246,6 +354,6 @@ void OnnxVGGT::printInfo()
 
         auto shape = mEngine->getTensorShape(name);
 
-        std::cout << name << std::endl;
+        std::cout << name << ", " << shape.nbDims << std::endl;
     }
 }

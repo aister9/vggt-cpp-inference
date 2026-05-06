@@ -34,6 +34,12 @@ torch::Tensor load_image(const std::string &path){
     return tensor.clone();
 }
 
+std::vector<torch::Tensor> load_images_from_folder(const std::string &path){
+    std::filesystem::path directoryFolder;
+    
+    return {};
+}
+
 int main(){
     DataType type = FP32;
     std::filesystem::path onnxPath = (type==FP32)?"D:/vggt_onnx/vggt.onnx":"D:/vggt_onnx/vggt_fp16.onnx";
