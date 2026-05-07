@@ -626,7 +626,7 @@ int main(){
     std::cout << "[main] onnxPath=" << onnxPath << std::endl;
 
     //const auto datasetPath = std::filesystem::current_path().parent_path().parent_path() / "dataset" / "fountain-p11";
-    std::filesystem::path datasetPath_dtu = "D:/MVSDataset/Testset/scan55";
+    std::filesystem::path datasetPath_dtu = "D:/MVSDataset/Testset/scan25";
     const auto datasetPath = datasetPath_dtu / "urd";
     std::cout << "[main] datasetPath=" << datasetPath << std::endl;
     auto ori_images = load_images_from_folder(datasetPath.string());
