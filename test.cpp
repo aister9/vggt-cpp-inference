@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <unordered_set>
 
 #include <filesystem>
 
@@ -479,12 +480,36 @@ void save_point_cloud_from_depth_unprojection(
         throw std::runtime_error("pose_enc view count must match depth view count");
     }
 
-    std::vector<std::array<float, 4>> cloud_rows;
-    cloud_rows.reserve(static_cast<size_t>(n * depth_cpu.size(1) * depth_cpu.size(2)));
+    struct VoxelStat {
+        double sum_x = 0.0;
+        double sum_y = 0.0;
+        double sum_z = 0.0;
+        double sum_r = 0.0;
+        double sum_g = 0.0;
+        double sum_b = 0.0;
+        uint32_t sample_count = 0;
+        uint32_t view_count = 0;
+    };
+
+    const float voxel_size = 0.0001f; // 1 cm
+    const float inv_voxel = 1.0f / voxel_size;
+
+    auto make_key = [inv_voxel](float x, float y, float z) -> std::string {
+        const int32_t ix = static_cast<int32_t>(std::llround(x * inv_voxel));
+        const int32_t iy = static_cast<int32_t>(std::llround(y * inv_voxel));
+        const int32_t iz = static_cast<int32_t>(std::llround(z * inv_voxel));
+        
+        return std::to_string(ix) + "_" + std::to_string(iy) + "_" + std::to_string(iz);
+    };
+
+    std::unordered_map<std::string, VoxelStat> voxels;
+    voxels.reserve(static_cast<size_t>(n * depth_cpu.size(1) * depth_cpu.size(2) / 8));
 
     for (int64_t vi = 0; vi < n; ++vi) {
         const int64_t out_h = original_sizes[static_cast<size_t>(vi)].first;
         const int64_t out_w = original_sizes[static_cast<size_t>(vi)].second;
+        std::unordered_set<std::string> seen_in_view;
+        seen_in_view.reserve(static_cast<size_t>(out_h * out_w / 8));
 
         torch::Tensor d = depth_cpu[vi].unsqueeze(0).unsqueeze(0);          // [1,1,H,W]
         torch::Tensor c = conf_cpu[vi].unsqueeze(0).unsqueeze(0);           // [1,1,H,W]
@@ -581,16 +606,45 @@ void save_point_cloud_from_depth_unprojection(
                 const int r = static_cast<int>(std::round(std::clamp(rgb_acc[y][x][0], 0.0f, 1.0f) * 255.0f));
                 const int g = static_cast<int>(std::round(std::clamp(rgb_acc[y][x][1], 0.0f, 1.0f) * 255.0f));
                 const int b = static_cast<int>(std::round(std::clamp(rgb_acc[y][x][2], 0.0f, 1.0f) * 255.0f));
+                const std::string key = make_key(px, py, pz);
+                auto& stat = voxels[key];
+                stat.sum_x += px;
+                stat.sum_y += py;
+                stat.sum_z += pz;
+                stat.sum_r += static_cast<double>(r);
+                stat.sum_g += static_cast<double>(g);
+                stat.sum_b += static_cast<double>(b);
+                stat.sample_count += 1;
 
-                const std::uint32_t rgb_uint = (static_cast<std::uint32_t>(r) << 16) |
-                                               (static_cast<std::uint32_t>(g) << 8) |
-                                               static_cast<std::uint32_t>(b);
-                float rgb_float = 0.0f;
-                std::memcpy(&rgb_float, &rgb_uint, sizeof(float));
-
-                cloud_rows.push_back({px, py, pz, rgb_float});
+                if (seen_in_view.insert(key).second) {
+                    stat.view_count += 1;
+                }
             }
         }
+    }
+
+    std::vector<std::array<float, 4>> cloud_rows;
+    cloud_rows.reserve(voxels.size());
+    for (const auto& kv : voxels) {
+        const VoxelStat& stat = kv.second;
+        if (stat.view_count < 2 || stat.sample_count == 0) {
+            continue;
+        }
+
+        const float x = static_cast<float>(stat.sum_x / stat.sample_count);
+        const float y = static_cast<float>(stat.sum_y / stat.sample_count);
+        const float z = static_cast<float>(stat.sum_z / stat.sample_count);
+        const int r = static_cast<int>(std::round(stat.sum_r / stat.sample_count));
+        const int g = static_cast<int>(std::round(stat.sum_g / stat.sample_count));
+        const int b = static_cast<int>(std::round(stat.sum_b / stat.sample_count));
+
+        const std::uint32_t rgb_uint = (static_cast<std::uint32_t>(std::clamp(r, 0, 255)) << 16) |
+                                       (static_cast<std::uint32_t>(std::clamp(g, 0, 255)) << 8) |
+                                       static_cast<std::uint32_t>(std::clamp(b, 0, 255));
+        float rgb_float = 0.0f;
+        std::memcpy(&rgb_float, &rgb_uint, sizeof(float));
+
+        cloud_rows.push_back({x, y, z, rgb_float});
     }
 
     std::filesystem::create_directories(pcd_path.parent_path());
