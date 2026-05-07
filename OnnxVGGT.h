@@ -352,11 +352,11 @@ OnnxVGGT::VGGTOutput OnnxVGGT::infer(const std::vector<torch::Tensor> &input_ima
     auto inputTorchType = toTorchScalarType(
         mEngine->getTensorDataType(inputName));
 
-    torch::Tensor batch = torch::zeros(
+    torch::Tensor batch_cpu = torch::zeros(
         {B, C, H, W},
         torch::TensorOptions()
             .dtype(inputTorchType)
-            .device(torch::kCUDA));
+            .device(torch::kCPU));
 
     for (int i = 0; i < input_images.size(); i++)
     {
@@ -368,9 +368,11 @@ OnnxVGGT::VGGTOutput OnnxVGGT::infer(const std::vector<torch::Tensor> &input_ima
             throw std::runtime_error("Each input image must have shape [3, 518, 518]");
         }
 
-        img = img.to(torch::kCUDA).to(inputTorchType).contiguous();
-        batch[i].copy_(img);
+        img = img.to(inputTorchType).to(torch::kCPU).contiguous();
+        batch_cpu[i].copy_(img);
     }
+
+    torch::Tensor batch = batch_cpu.to(torch::kCUDA);
 
     if (!context->setTensorAddress(inputName, batch.data_ptr()))
     {
