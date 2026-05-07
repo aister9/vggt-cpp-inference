@@ -498,7 +498,7 @@ void save_point_cloud_from_depth_unprojection(
         const int32_t ix = static_cast<int32_t>(std::llround(x * inv_voxel));
         const int32_t iy = static_cast<int32_t>(std::llround(y * inv_voxel));
         const int32_t iz = static_cast<int32_t>(std::llround(z * inv_voxel));
-        
+
         return std::to_string(ix) + "_" + std::to_string(iy) + "_" + std::to_string(iz);
     };
 
@@ -625,6 +625,8 @@ void save_point_cloud_from_depth_unprojection(
 
     std::vector<std::array<float, 4>> cloud_rows;
     cloud_rows.reserve(voxels.size());
+    double sum_view_count_kept = 0.0;
+    uint64_t kept_point_count = 0;
     for (const auto& kv : voxels) {
         const VoxelStat& stat = kv.second;
         if (stat.view_count < 2 || stat.sample_count == 0) {
@@ -645,6 +647,8 @@ void save_point_cloud_from_depth_unprojection(
         std::memcpy(&rgb_float, &rgb_uint, sizeof(float));
 
         cloud_rows.push_back({x, y, z, rgb_float});
+        sum_view_count_kept += static_cast<double>(stat.view_count);
+        kept_point_count += 1;
     }
 
     std::filesystem::create_directories(pcd_path.parent_path());
@@ -668,7 +672,12 @@ void save_point_cloud_from_depth_unprojection(
     }
     ofs.close();
 
+    const double avg_views_per_point = (kept_point_count > 0)
+        ? (sum_view_count_kept / static_cast<double>(kept_point_count))
+        : 0.0;
+
     std::cout << "[save_point_cloud_from_depth_unprojection] saved points=" << cloud_rows.size()
+              << ", avg_views_per_point=" << avg_views_per_point
               << ", file=" << pcd_path << std::endl;
 }
 
@@ -757,5 +766,5 @@ int main(){
         original_sizes,
         0.95f);
 
-    std::cout << output_struct.pose_enc << std::endl;
+    //std::cout << output_struct.pose_enc << std::endl;
 }
