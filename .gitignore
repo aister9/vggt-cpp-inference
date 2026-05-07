@@ -43,3 +43,6 @@ Testing/
 *.suo
 *.tmp
 *.cache
+
+# Inference artifacts
+dataset/fountain-p11/output/*.pcd

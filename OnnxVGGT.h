@@ -89,6 +89,12 @@ public:
         torch::Tensor images;
     };
 
+    OnnxVGGT() = default;
+    OnnxVGGT(DataType types, const std::filesystem::path &path){
+        type = types;
+        onnxPath = path;
+    }
+
     bool build();
     VGGTOutput infer(const std::vector<torch::Tensor> &input_images);
 
@@ -96,7 +102,7 @@ public:
 
 private:
     DataType type = FP16;
-    std::filesystem::path onnxPath = (type == FP32) ? "D:/vggt_onnx/vggt.onnx" : "D:/vggt_onnx/vggt_fp16.onnx";
+    std::filesystem::path onnxPath = (type == FP32) ? "D:/vggt_onnx/VGGT-1B-onnx/vggt.onnx" : "D:/vggt_onnx/VGGT-1B-onnx/vggt_fp16.onnx";
 
     std::shared_ptr<nvinfer1::IRuntime> mRuntime;
     std::shared_ptr<nvinfer1::ICudaEngine> mEngine;
@@ -174,27 +180,27 @@ bool OnnxVGGT::build()
 
         config->setBuilderOptimizationLevel(0);
         config->setFlag(nvinfer1::BuilderFlag::kFP16);
-        config->setMemoryPoolLimit(
-            nvinfer1::MemoryPoolType::kWORKSPACE,
-            2ULL << 30 // 예: 6GB
-        );
+        // config->setMemoryPoolLimit(
+        //     nvinfer1::MemoryPoolType::kWORKSPACE,
+        //     6ULL << 30 // 예: 6GB
+        // );
 
         auto profile = builder->createOptimizationProfile();
 
         profile->setDimensions(
             "input_images",
             nvinfer1::OptProfileSelector::kMIN,
-            nvinfer1::Dims4{4, 3, 518, 518});
+            nvinfer1::Dims4{1, 3, 518, 518});
 
         profile->setDimensions(
             "input_images",
             nvinfer1::OptProfileSelector::kOPT,
-            nvinfer1::Dims4{4, 3, 518, 518});
+            nvinfer1::Dims4{49, 3, 518, 518});
 
         profile->setDimensions(
             "input_images",
             nvinfer1::OptProfileSelector::kMAX,
-            nvinfer1::Dims4{4, 3, 518, 518});
+            nvinfer1::Dims4{64, 3, 518, 518});
 
         config->addOptimizationProfile(profile);
         std::unique_ptr<nvinfer1::IHostMemory> plan{builder->buildSerializedNetwork(*network, *config)};
@@ -270,7 +276,7 @@ bool OnnxVGGT::build()
 
 OnnxVGGT::VGGTOutput OnnxVGGT::infer(const std::vector<torch::Tensor> &input_images)
 {
-    constexpr int B = 4;
+    int B = input_images.size();
     constexpr int C = 3;
     constexpr int H = 518;
     constexpr int W = 518;

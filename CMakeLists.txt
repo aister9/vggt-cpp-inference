@@ -12,11 +12,11 @@ add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 
 find_package(CUDAToolkit 12.8 REQUIRED)
 
-set(Torch_ROOT "D:/libtorch/libtorch")
+set(Torch_ROOT "D:/libtorch/Release/libtorch")
 set(Torch_DIR "${Torch_ROOT}/share/cmake/Torch")
 find_package(Torch REQUIRED)
 
-set(TensorRT_DIR "D:/TensorRT-10.10.0.31")
+set(TensorRT_DIR "D:/TensorRT/TensorRT-10.16.1.11")
 
 include_directories(
     ${TensorRT_DIR}/include
@@ -66,7 +66,7 @@ endif()
 
 
 if (WIN32)
-    file(GLOB TensorRT_DLLS "${TensorRT_DIR}/lib/*.dll")
+    file(GLOB TensorRT_DLLS "${TensorRT_DIR}/bin/*.dll")
 
     add_custom_command(TARGET vggt_cpp_infer POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
